@@ -64,17 +64,17 @@
           ansible.builtin.debug:
             msg: |
               ✓ Arch Linux updated successfully
-              Total packages updated: {{ arch_update.packages | length }}
+              Total packages updated: {{ arch_update.packages | default([]) | length }}
               Updated packages:
-              {% for pkg in arch_update.packages %}
+              {% for pkg in arch_update.packages | default([]) %}
                 - {{ pkg }}
               {% endfor %}
-          when: arch_update.packages | length > 0
+          when: arch_update.packages is defined and arch_update.packages | length > 0
 
         - name: Show Arch (no updates)
           ansible.builtin.debug:
             msg: "✓ Arch Linux - system already up to date"
-          when: arch_update.packages | length == 0
+          when: arch_update.packages is not defined or arch_update.packages | length == 0
 
       when: ansible_facts["os_family"] == "Archlinux"
       rescue:
@@ -107,10 +107,10 @@
 
         - name: Parse upgrade output
           ansible.builtin.set_fact:
-            packages_upgraded: "{{ apt_upgrade.stdout_lines | select('match', '^\\d+ upgraded') | first | regex_replace('[^0-9]', '') | default('0') }}"
-            packages_new: "{{ apt_upgrade.stdout_lines | select('match', '^\\d+ newly installed') | first | regex_replace('[^0-9]', '') | default('0') }}"
-            packages_removed: "{{ apt_autoremove.stdout_lines | select('match', '^\\d+ removed') | first | regex_replace('[^0-9]', '') | default('0') }}"
-          when: apt_upgrade.stdout_lines is defined
+            packages_upgraded: "{{ (apt_upgrade.stdout | regex_search('(\\d+) upgraded', '\\1') | first | int) if 'upgraded' in apt_upgrade.stdout else 0 }}"
+            packages_new: "{{ (apt_upgrade.stdout | regex_search('(\\d+) newly installed', '\\1') | first | int) if 'newly installed' in apt_upgrade.stdout else 0 }}"
+            packages_removed: "{{ (apt_autoremove.stdout | regex_search('(\\d+) removed', '\\1') | first | int) if 'removed' in apt_autoremove.stdout else 0 }}"
+          when: apt_upgrade.stdout is defined
 
         - name: Show Debian update result
           ansible.builtin.debug:
