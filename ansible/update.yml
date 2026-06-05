@@ -3,71 +3,154 @@
   hosts: all
   gather_facts: true
   vars:
-    ansible_become_method: sudo
     ansible_become_user: root
+
+  pre_tasks:
+    - name: Display system information
+      ansible.builtin.debug:
+        msg: |
+          System: {{ ansible_facts["hostname"] }}
+          OS Family: {{ ansible_facts["os_family"] }}
+          Distro: {{ ansible_facts["distribution"] }} {{ ansible_facts["distribution_version"] }}
+          User: {{ ansible_user }}
+          UID: {{ ansible_user_id }}
+          Connection: {{ ansible_connection }}
+
+    - name: Detect available privilege escalation method
+      block:
+        - name: Check if sudo is available
+          ansible.builtin.command:
+            cmd: which sudo
+          register: sudo_check
+          changed_when: false
+          failed_when: false
+
+        - name: Check if user is already root
+          ansible.builtin.set_fact:
+            is_root_user: "{{ ansible_user_id == '0' }}"
+
+        - name: Set become method based on availability
+          ansible.builtin.set_fact:
+            ansible_become_method: "{{ 'sudo' if sudo_check.rc == 0 else 'su' }}"
+            use_become: "{{ false if is_root_user else true }}"
+
+        - name: Show privilege escalation method
+          ansible.builtin.debug:
+            msg: |
+              Become method: {{ ansible_become_method }}
+              Use become: {{ use_become }}
+              Is root: {{ is_root_user }}
 
   tasks:
     - name: Update Arch Linux
-      become: true
       block:
         - name: Sync Arch package database and update packages
+          become: "{{ use_become }}"
           community.general.pacman:
             update_cache: true
             upgrade: true
             state: latest
           register: arch_update
 
+        - name: Remove orphaned Arch packages
+          become: "{{ use_become }}"
+          ansible.builtin.command:
+            cmd: pacman -Qtdq | pacman -Rns -
+          register: arch_autoremove
+          changed_when: arch_autoremove.rc == 0
+          failed_when: false
+
         - name: Show Arch update result
           ansible.builtin.debug:
-            msg: "Arch Linux packages updated: {{ arch_update.packages | length }} packages"
-          when: arch_update.packages is defined
+            msg: |
+              ✓ Arch Linux updated successfully
+              Total packages updated: {{ arch_update.packages | length }}
+              Updated packages:
+              {% for pkg in arch_update.packages %}
+                - {{ pkg }}
+              {% endfor %}
+          when: arch_update.packages | length > 0
+
+        - name: Show Arch (no updates)
+          ansible.builtin.debug:
+            msg: "✓ Arch Linux - system already up to date"
+          when: arch_update.packages | length == 0
 
       when: ansible_facts["os_family"] == "Archlinux"
+      rescue:
+        - name: Arch update failed
+          ansible.builtin.debug:
+            msg: "✗ Arch update failed: {{ ansible_failed_result }}"
 
     - name: Update Debian/Ubuntu
-      become: true
       block:
         - name: Update apt cache
+          become: "{{ use_become }}"
           ansible.builtin.apt:
             update_cache: true
             cache_valid_time: 3600
           register: apt_cache_update
 
         - name: Upgrade all packages
+          become: "{{ use_become }}"
           ansible.builtin.apt:
             upgrade: dist
             autoclean: true
-            autoremove: true
           register: apt_upgrade
+
+        - name: Remove orphaned dependencies and unused packages
+          become: "{{ use_become }}"
+          ansible.builtin.apt:
+            autoremove: true
+            autoclean: true
+          register: apt_autoremove
+
+        - name: Parse upgrade output
+          ansible.builtin.set_fact:
+            packages_upgraded: "{{ apt_upgrade.stdout_lines | select('match', '^\\d+ upgraded') | first | regex_replace('[^0-9]', '') | default('0') }}"
+            packages_new: "{{ apt_upgrade.stdout_lines | select('match', '^\\d+ newly installed') | first | regex_replace('[^0-9]', '') | default('0') }}"
+            packages_removed: "{{ apt_autoremove.stdout_lines | select('match', '^\\d+ removed') | first | regex_replace('[^0-9]', '') | default('0') }}"
+          when: apt_upgrade.stdout_lines is defined
 
         - name: Show Debian update result
           ansible.builtin.debug:
             msg: |
-              Debian/Ubuntu updated successfully.
-              Packages upgraded: {{ apt_upgrade.stdout_lines | length if apt_upgrade.stdout_lines else 0 }}
+              ✓ Debian/Ubuntu updated successfully
+              Upgraded: {{ packages_upgraded | default('0') }} packages
+              New: {{ packages_new | default('0') }} packages
+              Removed (autoremove): {{ packages_removed | default('0') }} packages
+
+      when: ansible_facts["os_family"] == "Debian"
+      rescue:
+        - name: Debian update failed
+          ansible.builtin.debug:
+            msg: "✗ Debian update failed: {{ ansible_failed_result }}"
+
+    - name: Check for reboot requirement (informational only)
+      block:
+        - name: Check if reboot is required (Debian)
+          become: "{{ use_become }}"
+          ansible.builtin.stat:
+            path: /var/run/reboot-required
+          register: debian_reboot
+          when: ansible_facts["os_family"] == "Debian"
+
+        - name: Warn if reboot needed (manual action required)
+          ansible.builtin.debug:
+            msg: |
+              ⚠ WARNING: System reboot is recommended
+              A reboot file exists at /var/run/reboot-required
+              Please schedule a manual reboot when convenient
+              This is typically needed after kernel or libc updates
+          when: ansible_facts["os_family"] == "Debian" and debian_reboot.stat.exists
 
       when: ansible_facts["os_family"] == "Debian"
 
-    - name: Check if reboot is required (Arch)
-      ansible.builtin.stat:
-        path: /var/lib/pacman/db.lck
-      register: arch_lock
-      when: ansible_facts["os_family"] == "Archlinux"
-
-    - name: Check if reboot is required (Debian)
-      ansible.builtin.stat:
-        path: /var/run/reboot-required
-      register: debian_reboot
-      when: ansible_facts["os_family"] == "Debian"
-
-    - name: Reboot if needed
-      become: true
-      ansible.builtin.reboot:
-        msg: "Rebooting after system updates"
-        connect_timeout: 5
-        reboot_timeout: 300
-        pre_reboot_delay: 0
-        post_reboot_delay: 30
-      when: >
-        (ansible_facts["os_family"] == "Archlinux" and arch_lock.stat.exists) or
-        (ansible_facts["os_family"] == "Debian" and debian_reboot.stat.exists)
+  post_tasks:
+    - name: Final summary
+      ansible.builtin.debug:
+        msg: |
+          ╔════════════════════════════════════╗
+          ║  {{ ansible_facts["hostname"] | upper }} - UPDATE COMPLETE  ║
+          ║  No automatic reboot performed     ║
+          ╚════════════════════════════════════╝
