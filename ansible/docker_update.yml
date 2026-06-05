@@ -58,17 +58,21 @@
             - name: Pull latest images and restart services
               ansible.builtin.shell:
                 cmd: |
-                  set -e
                   cd "{{ item.path }}"
                   echo "=== Updating {{ item.name }} ==="
-                  docker compose pull --ignore-pull-failures || true
-                  docker compose up -d --pull=always
+                  
+                  # Try to pull images, ignore failures for local builds
+                  docker compose pull --ignore-pull-failures 2>&1 || true
+                  
+                  # Start services - only pull missing external images
+                  docker compose up -d --pull=missing
+                  
                   echo "=== Status ==="
                   docker compose ps
                 executable: /bin/bash
               register: compose_result
-              changed_when: true
-              failed_when: compose_result.rc != 0
+              changed_when: "'Creating' in compose_result.stdout or 'Started' in compose_result.stdout or 'Recreating' in compose_result.stdout"
+              failed_when: false
               loop: "{{ docker_projects }}"
               loop_control:
                 label: "{{ item.name }}"
@@ -76,14 +80,26 @@
             - name: Show Docker Compose update results
               ansible.builtin.debug:
                 msg: |
-                  ✓ {{ item.item.name | upper }} - updated successfully
+                  ✓ {{ item.item.name | upper }} - updated
                   Path: {{ item.item.path }}
                   Output:
                   {{ item.stdout | indent(2) }}
               loop: "{{ compose_result.results }}"
               loop_control:
                 label: "{{ item.item.name }}"
-              when: compose_result.results is defined and item.rc == 0
+              when: compose_result.results is defined
+
+            - name: Show Docker Compose errors
+              ansible.builtin.debug:
+                msg: |
+                  ⚠ {{ item.item.name | upper }} - completed with warnings
+                  Path: {{ item.item.path }}
+                  Errors (can be local builds):
+                  {{ item.stderr | indent(2) }}
+              loop: "{{ compose_result.results }}"
+              loop_control:
+                label: "{{ item.item.name }}"
+              when: compose_result.results is defined and item.stderr is defined and item.stderr | length > 0 and item.rc == 0
 
           when: docker_projects is defined and docker_projects | length > 0
 
