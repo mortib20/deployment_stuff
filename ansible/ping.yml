@@ -1,0 +1,5 @@
+---
+- hosts: all
+  tasks:
+    - name: Ping alle Server
+      ansible.builtin.ping:
