@@ -1,0 +1,15 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+    - name: Arch Linux (Schauenstein) aktualisieren
+      ansible.builtin.package:
+        update_cache: yes
+        upgrade: full
+      when: ansible_os_family == "Archlinux"
+
+    - name: Armbian (Neumühl) nur Paket-Updates (kein Dist-Upgrade)
+      ansible.builtin.apt:
+        update_cache: yes
+        upgrade: yes
+      when: ansible_os_family == "Debian"
