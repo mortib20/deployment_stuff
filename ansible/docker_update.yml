@@ -61,7 +61,7 @@
                   set -e
                   cd "{{ item.path }}"
                   echo "=== Updating {{ item.name }} ==="
-                  docker compose pull
+                  docker compose pull --ignore-pull-failures || true
                   docker compose up -d --pull=always
                   echo "=== Status ==="
                   docker compose ps
