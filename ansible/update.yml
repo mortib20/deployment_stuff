@@ -1,15 +1,75 @@
 ---
-- hosts: all
-  become: yes
+- name: Update all systems
+  hosts: all
+  gather_facts: true
+  vars:
+    ansible_become_method: sudo
+    ansible_become_user: root
+
   tasks:
-    - name: Update ArchLinux
-      ansible.builtin.package:
-        update_cache: yes
-        upgrade: yes
+    - name: Update Arch Linux
+      become: true
+      block:
+        - name: Sync Arch package database and update packages
+          community.general.pacman:
+            update_cache: true
+            upgrade: true
+            state: latest
+          register: arch_update
+
+        - name: Show Arch update result
+          ansible.builtin.debug:
+            msg: "Arch Linux packages updated: {{ arch_update.packages | length }} packages"
+          when: arch_update.packages is defined
+
       when: ansible_os_family == "Archlinux"
 
-    - name: Update Debian
-      ansible.builtin.apt:
-        update_cache: yes
-        upgrade: dist
+    - name: Update Debian/Ubuntu
+      become: true
+      block:
+        - name: Update apt cache
+          ansible.builtin.apt:
+            update_cache: true
+            cache_valid_time: 3600
+          register: apt_cache_update
+
+        - name: Upgrade all packages
+          ansible.builtin.apt:
+            upgrade: dist
+            autoclean: true
+            autoremove: true
+          register: apt_upgrade
+
+        - name: Show Debian update result
+          ansible.builtin.debug:
+            msg: |
+              Debian/Ubuntu updated successfully.
+              Packages upgraded: {{ apt_upgrade.stdout_lines | length if apt_upgrade.stdout_lines else 0 }}
+
       when: ansible_os_family == "Debian"
+
+    - name: Reboot if required
+      become: true
+      block:
+        - name: Check if reboot is required (Arch)
+          ansible.builtin.stat:
+            path: /var/lib/pacman/db.lck
+          register: arch_lock
+          when: ansible_os_family == "Archlinux"
+
+        - name: Check if reboot is required (Debian)
+          ansible.builtin.stat:
+            path: /var/run/reboot-required
+          register: debian_reboot
+          when: ansible_os_family == "Debian"
+
+        - name: Reboot if needed
+          ansible.builtin.reboot:
+            msg: "Rebooting after system updates"
+            connect_timeout: 5
+            reboot_timeout: 300
+            pre_reboot_delay: 0
+            post_reboot_delay: 30
+          when: |
+            (ansible_os_family == "Archlinux" and arch_lock.stat.exists) or
+            (ansible_os_family == "Debian" and debian_reboot.stat.exists)
