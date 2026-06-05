@@ -1,0 +1,112 @@
+---
+- name: Update Docker Compose projects
+  hosts: all
+  gather_facts: true
+
+  pre_tasks:
+    - name: Display system information
+      ansible.builtin.debug:
+        msg: |
+          System: {{ ansible_facts["hostname"] }}
+          Docker projects configured: {{ docker_projects | default([]) | length }}
+          User: {{ ansible_user }}
+
+    - name: Validate Docker projects configuration
+      ansible.builtin.debug:
+        msg: |
+          Projects to update:
+          {% for project in docker_projects | default([]) %}
+            - {{ project.name }}: {{ project.path }}
+          {% endfor %}
+      when: docker_projects is defined and docker_projects | length > 0
+
+    - name: Check if Docker is installed
+      ansible.builtin.command:
+        cmd: which docker
+      register: docker_check
+      changed_when: false
+      failed_when: false
+
+    - name: Check if Docker Compose is available
+      ansible.builtin.command:
+        cmd: docker compose version
+      register: docker_compose_check
+      changed_when: false
+      failed_when: false
+      when: docker_check.rc == 0
+
+    - name: Show Docker and Compose versions
+      ansible.builtin.debug:
+        msg: |
+          Docker: {{ docker_check.stdout if docker_check.rc == 0 else 'NOT FOUND' }}
+          Docker Compose: {{ docker_compose_check.stdout_lines[0] if docker_compose_check.rc == 0 else 'NOT FOUND' }}
+      when: docker_check.rc == 0
+
+  tasks:
+    - name: Update Docker Compose projects
+      block:
+        - name: Check Docker availability
+          ansible.builtin.assert:
+            that:
+              - docker_check.rc == 0
+              - docker_compose_check.rc == 0
+            fail_msg: "Docker or Docker Compose not found on system"
+          when: docker_projects is defined and docker_projects | length > 0
+
+        - name: Process each Docker Compose project
+          block:
+            - name: Pull latest images and restart services
+              ansible.builtin.shell:
+                cmd: |
+                  set -e
+                  cd "{{ item.path }}"
+                  echo "=== Updating {{ item.name }} ==="
+                  docker compose pull
+                  docker compose up -d --pull=always
+                  echo "=== Status ==="
+                  docker compose ps
+                executable: /bin/bash
+              register: compose_result
+              changed_when: true
+              failed_when: compose_result.rc != 0
+              loop: "{{ docker_projects }}"
+              loop_control:
+                label: "{{ item.name }}"
+
+            - name: Show Docker Compose update results
+              ansible.builtin.debug:
+                msg: |
+                  ✓ {{ item.item.name | upper }} - updated successfully
+                  Path: {{ item.item.path }}
+                  Output:
+                  {{ item.stdout | indent(2) }}
+              loop: "{{ compose_result.results }}"
+              loop_control:
+                label: "{{ item.item.name }}"
+              when: compose_result.results is defined and item.rc == 0
+
+          when: docker_projects is defined and docker_projects | length > 0
+
+      rescue:
+        - name: Docker update failed
+          ansible.builtin.debug:
+            msg: |
+              ✗ Docker Compose update failed on {{ ansible_facts["hostname"] }}
+              Error: {{ ansible_failed_result.msg | default('Unknown error') }}
+              {% if ansible_failed_result.module_stderr is defined %}
+              stderr: {{ ansible_failed_result.module_stderr }}
+              {% endif %}
+
+    - name: Show skipped message
+      ansible.builtin.debug:
+        msg: "ℹ No Docker projects configured for this host"
+      when: docker_projects is not defined or docker_projects | length == 0
+
+  post_tasks:
+    - name: Final summary
+      ansible.builtin.debug:
+        msg: |
+          ╔════════════════════════════════════╗
+          ║  {{ ansible_facts["hostname"] | upper }} - DOCKER UPDATE COMPLETE  ║
+          ║  Projects updated: {{ docker_projects | default([]) | length }}  ║
+          ╚════════════════════════════════════╝
