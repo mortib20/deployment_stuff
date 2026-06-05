@@ -22,7 +22,7 @@
             msg: "Arch Linux packages updated: {{ arch_update.packages | length }} packages"
           when: arch_update.packages is defined
 
-      when: ansible_os_family == "Archlinux"
+      when: ansible_facts["os_family"] == "Archlinux"
 
     - name: Update Debian/Ubuntu
       become: true
@@ -46,7 +46,7 @@
               Debian/Ubuntu updated successfully.
               Packages upgraded: {{ apt_upgrade.stdout_lines | length if apt_upgrade.stdout_lines else 0 }}
 
-      when: ansible_os_family == "Debian"
+      when: ansible_facts["os_family"] == "Debian"
 
     - name: Reboot if required
       become: true
@@ -55,13 +55,13 @@
           ansible.builtin.stat:
             path: /var/lib/pacman/db.lck
           register: arch_lock
-          when: ansible_os_family == "Archlinux"
+          when: ansible_facts["os_family"] == "Archlinux"
 
         - name: Check if reboot is required (Debian)
           ansible.builtin.stat:
             path: /var/run/reboot-required
           register: debian_reboot
-          when: ansible_os_family == "Debian"
+          when: ansible_facts["os_family"] == "Debian"
 
         - name: Reboot if needed
           ansible.builtin.reboot:
@@ -71,5 +71,5 @@
             pre_reboot_delay: 0
             post_reboot_delay: 30
           when: |
-            (ansible_os_family == "Archlinux" and arch_lock.stat.exists) or
-            (ansible_os_family == "Debian" and debian_reboot.stat.exists)
+            (ansible_facts["os_family"] == "Archlinux" and arch_lock.stat.exists) or
+            (ansible_facts["os_family"] == "Debian" and debian_reboot.stat.exists)
